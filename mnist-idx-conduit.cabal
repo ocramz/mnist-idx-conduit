@@ -21,10 +21,11 @@ library
   exposed-modules:     Data.IDX.Conduit
   build-depends:       base >= 4.7 && < 5
                      , binary
-                     , binary-conduit
                      , bytestring
                      , conduit
-                     , mnist-idx
+                     , containers
+                     , exceptions
+                     , resourcet
                      , vector
 
 -- executable mnist-idx-conduit
@@ -33,18 +34,19 @@ library
 --   hs-source-dirs:      app
 --   main-is:             Main.hs
 --   build-depends:       base
+--                      , conduit
 --                      , mnist-idx-conduit
 
-test-suite spec
-  default-language:    Haskell2010
-  ghc-options:         -Wall
-  type:                exitcode-stdio-1.0
-  hs-source-dirs:      test
-  main-is:             Spec.hs
-  build-depends:       base
-                     , mnist-idx-conduit
-                     , hspec
-                     , QuickCheck
+-- test-suite spec
+--   default-language:    Haskell2010
+--   ghc-options:         -Wall
+--   type:                exitcode-stdio-1.0
+--   hs-source-dirs:      test
+--   main-is:             Spec.hs
+--   build-depends:       base
+--                      , mnist-idx-conduit
+--                      , hspec
+--                      , QuickCheck
 
 source-repository head
   type:     git
