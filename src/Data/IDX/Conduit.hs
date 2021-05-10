@@ -4,15 +4,24 @@
 {-# options_ghc -Wno-unused-matches #-}
 {-|
 
-Streaming decoders for the IDX format used in the MNIST dataset
+Streaming decoders for the IDX format used in the MNIST handwritten digit recognition dataset [1].
 
-The data items are passed down the conduit either in dense or sparse form
+Both sparse and dense decoders are provided. In either case, the range of the data is the same as the raw data (one unsigned byte per pixel).
+
+
+== Links
+
+1) http://yann.lecun.com/exdb/mnist/
+
 -}
 module Data.IDX.Conduit (
+  -- * Labels
   sourceIdxLabels,
-  -- * Dense
+  mnistLabels,
+  -- * Data
+  -- ** Dense data buffers
   sourceIdx,
-  -- * Sparse
+  -- ** Sparse data buffers
   sourceIdxSparse,
   Sparse,
   sBufSize, sNzComponents
@@ -53,15 +62,23 @@ sourceIdx = sourceIDX_ (\ _ bs -> VU.fromList $ components bs)
 
 -- | Outputs sparse data buffers (i.e without zero components)
 --
--- This incurs at least one additional data copy of each vector, but 
+-- This incurs at least one additional data copy of each vector, but the resulting vectors take up less space.
 sourceIdxSparse :: MonadResource m =>
                    FilePath -- ^ filepath of uncompressed IDX data file
                 -> C.ConduitT a (Sparse Word8) m ()
 sourceIdxSparse = sourceIDX_ (\n bs -> Sparse n (sparsify $ components bs))
 
+-- | Parser for the labels, can be plugged in as an argument to 'sourceIdxLabels'
+mnistLabels :: LBS.ByteString
+            -> Either String Int
+mnistLabels l
+  | length xs == 1 = Right (head xs)
+  | otherwise = Left "MNIST labels are the 0-9 digits"
+  where xs = fromEnum `map` (LBS.unpackBytes l)
+
 -- | Outputs the labels corresponding to the data
 sourceIdxLabels :: MonadResource m =>
-                   (LBS.ByteString -> Either e o) -- ^ parser for the labels
+                   (LBS.ByteString -> Either e o) -- ^ parser for the labels, where the bytestring buffer contains exactly one unsigned byte
                 -> FilePath -- ^ filepath of uncompressed IDX labels file
                 -> C.ConduitT i (Either e o) m r
 sourceIdxLabels buildf fp = withReadHdl fp $ \handle -> do

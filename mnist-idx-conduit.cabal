@@ -1,14 +1,14 @@
 name:                mnist-idx-conduit
-version:             0.1.0.0
-synopsis:            conduit utilities for MNIST IDX data files
--- description:
+version:             0.2.0.0
+synopsis:            conduit utilities for MNIST IDX files
+description:         Conduit decoders for MNIST IDX data files, as described in http://yann.lecun.com/exdb/mnist/ . The IDX format is a low-level binary representation for storing general vector, image or tensor data. Here the parsers are specialized to the MNIST dataset, which stores scans of handwritten digits and is a classic benchmark for text classification.
 homepage:            https://github.com/ocramz/mnist-idx-conduit
 license:             BSD3
 license-file:        LICENSE
 author:              Marco Zocca
 maintainer:          ocramz
 copyright:           2021 Marco Zocca
-category:            Data, Machine Learning, Data Mining
+category:            Data, Data Science, Machine Learning, Data Mining
 build-type:          Simple
 extra-source-files:  README.md
 cabal-version:       >=1.10
