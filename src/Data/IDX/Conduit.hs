@@ -1,5 +1,7 @@
 {-# LANGUAGE DeriveFoldable #-}
+{-# language ScopedTypeVariables #-}
 {-# options_ghc -Wno-unused-imports #-}
+{-# options_ghc -Wno-unused-matches #-}
 {-|
 
 Streaming decoders for the IDX format used in the MNIST dataset
@@ -7,6 +9,7 @@ Streaming decoders for the IDX format used in the MNIST dataset
 The data items are passed down the conduit either in dense or sparse form
 -}
 module Data.IDX.Conduit (
+  sourceIdxLabels,
   -- * Dense
   sourceIdx,
   -- * Sparse
@@ -15,8 +18,9 @@ module Data.IDX.Conduit (
   sBufSize, sNzComponents
                         )where
 
-
+import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO(..))
+import Data.Either (isRight)
 import Data.Foldable (Foldable(..))
 import Data.Int (Int8, Int16, Int32)
 import Data.Word (Word8)
@@ -55,8 +59,34 @@ sourceIdxSparse :: MonadResource m =>
                 -> C.ConduitT a (Sparse Word8) m ()
 sourceIdxSparse = sourceIDX_ (\n bs -> Sparse n (sparsify $ components bs))
 
+-- | Outputs the labels corresponding to the data
+sourceIdxLabels :: MonadResource m =>
+                   (LBS.ByteString -> Either e o) -- ^ parser for the labels
+                -> FilePath -- ^ filepath of uncompressed IDX labels file
+                -> C.ConduitT i (Either e o) m r
+sourceIdxLabels buildf fp = withReadHdl fp $ \handle -> do
+  hlbs <- liftIO $ LBS.hGet handle 4
+  case decodeE hlbs of
+    Left e -> error e
+    Right magic@IDXMagic{} -> do
+      nitbs <- liftIO $ LBS.hGet handle 4 -- number of items is 32 bit (4 byte)
+      case decodeE nitbs of
+        Left e -> error e
+        Right (n :: Int) -> do
+          let bufsize = 1
+              go h = do
+                b <- liftIO $ LBS.hGet h bufsize
+                liftIO $ hSeek h RelativeSeek (fromIntegral bufsize)
+                C.yield $ buildf b
+                go h
+          go handle
 
--- sourceIdxLabels = sourceIDX_ (\_ bs -> )
+decodeE :: Binary b => LBS.ByteString -> Either String b
+decodeE l = case decodeOrFail l of
+    Left (_, _, e) -> Left e
+    Right (_, _, x) -> Right x
+
+
 
 sourceIDX_ :: MonadResource m =>
               (Int -> LBS.ByteString -> o)
@@ -116,11 +146,11 @@ withReadHdl :: MonadResource m =>
             -> C.ConduitT i o m r
 withReadHdl fp = C.bracketP (openBinaryFile fp ReadMode) hClose
 
-data IDXHeader = IDXHeader {
-    idxMagic :: IDXMagic
-  , idxDimensions :: V.Vector Int
-  , ixdNumItems :: Int
-                           } deriving (Show)
+-- data IDXHeader = IDXHeader {
+--     idxMagic :: IDXMagic
+--   , idxDimensions :: V.Vector Int
+--   , ixdNumItems :: Int
+--                            } deriving (Show)
 
 -- | "magic number" starting the file header for the IDX format
 --
