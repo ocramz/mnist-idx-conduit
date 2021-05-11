@@ -28,6 +28,8 @@ library
                      , exceptions
                      , resourcet
                      , vector
+                       -- debug
+                     , hspec
 
 -- executable mnist-idx-conduit
 --   default-language:    Haskell2010
@@ -38,16 +40,18 @@ library
 --                      , conduit
 --                      , mnist-idx-conduit
 
--- test-suite spec
---   default-language:    Haskell2010
---   ghc-options:         -Wall
---   type:                exitcode-stdio-1.0
---   hs-source-dirs:      test
---   main-is:             Spec.hs
---   build-depends:       base
---                      , mnist-idx-conduit
---                      , hspec
---                      , QuickCheck
+test-suite spec
+  default-language:    Haskell2010
+  ghc-options:         -Wall
+  type:                exitcode-stdio-1.0
+  hs-source-dirs:      test
+  main-is:             Spec.hs
+  build-depends:       base
+                     , bytestring
+                     , conduit
+                     , mnist-idx-conduit
+                     , hspec
+                     , vector
 
 source-repository head
   type:     git

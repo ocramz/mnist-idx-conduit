@@ -4,7 +4,7 @@
 {-# options_ghc -Wno-unused-matches #-}
 {-|
 
-Streaming decoders for the IDX format used in the MNIST handwritten digit recognition dataset [1].
+Streaming (de)serialization and encode-decode functions for the IDX format used in the MNIST handwritten digit recognition dataset [1].
 
 Both sparse and dense decoders are provided. In either case, the range of the data is the same as the raw data (one unsigned byte per pixel).
 
@@ -20,17 +20,21 @@ module Data.IDX.Conduit (
   sourceIdxLabels,
   mnistLabels,
   -- ** Data
-  -- *** Dense data buffers
+  -- *** Dense
   sourceIdx,
-  -- *** Sparse data buffers
+  -- *** Sparse
   sourceIdxSparse,
   -- * Sink
+  -- ** Data
+  -- *** Dense
   sinkIdx,
+  -- *** Sparse
   sinkIdxSparse,
   -- * Types
   Sparse,
   sBufSize, sNzComponents,
-  IDXMagic(..)
+  -- * Debug
+  readHeader
                         )where
 
 import Control.Monad (when)
@@ -40,7 +44,7 @@ import Data.Foldable (Foldable(..), traverse_, for_)
 import Data.Int (Int8, Int16, Int32)
 import Data.Word (Word8)
 import GHC.IO.Handle (Handle, hSeek, SeekMode(..), hClose)
-import System.IO (IOMode(..), openBinaryFile)
+import System.IO (IOMode(..), withBinaryFile, openBinaryFile)
 -- binary
 import Data.Binary (Binary(..), Get, getWord8, putWord8, encode, decode, decodeOrFail)
 import Data.Binary.Get (runGetOrFail)
@@ -51,7 +55,7 @@ import qualified Data.ByteString.Lazy.Internal as LBS (unpackBytes, packBytes)
 -- conduit
 import Conduit (MonadResource, runResourceT, (.|), runConduitRes)
 import qualified Data.Conduit as C (ConduitT, runConduit, bracketP, yield)
-import qualified Data.Conduit.Combinators as C (sinkFile, map, takeExactly)
+import qualified Data.Conduit.Combinators as C (sinkFile, map, takeExactly, print)
 -- containers
 import Data.Sequence (Seq, (|>))
 import qualified Data.Sequence as SQ (fromList)
@@ -116,7 +120,6 @@ decodeE l = case decodeOrFail l of
 -- | Write a dataset to disk
 sinkIdx :: (MonadResource m, Foldable t) =>
            FilePath -- ^ file to write
-        -> IDXMagic
         -> Int -- ^ number of data items that will be written
         -> t Int -- ^ data dimension sizes
         -> C.ConduitT (VU.Vector Word8) c m ()
@@ -125,7 +128,6 @@ sinkIdx = sinkIDX_ (LBS.toStrict . fromComponents . VU.toList)
 -- | Write a sparse dataset to disk
 sinkIdxSparse :: (Foldable t, MonadResource m) =>
                  FilePath -- ^ file to write
-              -> IDXMagic
               -> Int -- ^ number of data items that will be written
               -> t Int -- ^ data dimension sizes
               -> C.ConduitT (Sparse Word8) c m ()
@@ -134,19 +136,19 @@ sinkIdxSparse = sinkIDX_ (\(Sparse n vu) -> LBS.toStrict $ fromComponents $ dens
 sinkIDX_ :: (MonadResource m, Foldable t) =>
             (i -> BS.ByteString)
          -> FilePath
-         -> IDXMagic
          -> Int -- ^ number of data items that will be written
          -> t Int -- ^ data dimension sizes
          -> C.ConduitT i c m ()
-sinkIDX_ buildf fp magic ndata ds = src .|
-                                    C.sinkFile fp
+sinkIDX_ buildf fp ndata ds = src .|
+                              C.sinkFile fp
   where
-    magicbs = encodeBS (magic :: IDXMagic)
+    ndims = length ds
+    magicbs = encodeBS (IDXMagic IDXUnsignedByte ndims)
     ndatabs = encodeBS (fromIntegral ndata :: Int32)
     src = do
       C.yield magicbs -- magic number
       C.yield ndatabs -- number of data items
-      for_ ds $ \d -> do
+      for_ ds $ \d -> do -- data dimension sizes
         let
           d32 :: Int32
           d32 = fromIntegral d
@@ -160,7 +162,7 @@ encodeBS = LBS.toStrict . encode
 sourceIDX_ :: MonadResource m =>
               (Int -> LBS.ByteString -> o)
            -> FilePath -- ^ filepath of uncompressed IDX data file
-           -> C.ConduitT i o m r
+           -> C.ConduitT i o m ()
 sourceIDX_ buildf fp = withReadHdl fp $ \handle -> do
   hlbs <- liftIO $ LBS.hGet handle 4
   case decodeOrFail hlbs of
@@ -173,14 +175,15 @@ sourceIDX_ buildf fp = withReadHdl fp $ \handle -> do
         Left e -> error e
         Right vv -> do
           let
-            -- ndata = V.head vv
+            ndata = V.head vv
             bufsize = product $ V.tail vv
-            go h = do
-              b <- liftIO $ LBS.hGet h bufsize
-              liftIO $ hSeek h RelativeSeek (fromIntegral bufsize)
-              C.yield $ buildf bufsize b
-              go h
-          go handle
+            go i h = do
+              when (i < ndata) $ do
+                b <- liftIO $ LBS.hGet h bufsize
+                liftIO $ hSeek h RelativeSeek (fromIntegral bufsize)
+                C.yield $ buildf bufsize b
+                go (succ i) h
+          go 0 handle
 
 sparsify :: (Foldable t) => t Word8 -> VU.Vector (Int, Word8)
 sparsify xs = VU.fromList $ toList $ snd $ foldl ins (0, mempty) xs
@@ -231,11 +234,26 @@ withReadHdl :: MonadResource m =>
             -> C.ConduitT i o m r
 withReadHdl fp = C.bracketP (openBinaryFile fp ReadMode) hClose
 
--- data IDXHeader = IDXHeader {
---     idxMagic :: IDXMagic
---   , idxDimensions :: V.Vector Int
---   , ixdNumItems :: Int
---                            } deriving (Show)
+withReadHdl_ :: FilePath -> (Handle -> IO r) -> IO r
+withReadHdl_ fp = withBinaryFile fp ReadMode
+
+readHeader :: FilePath -> IO (IDXMagic, Int32, V.Vector Int32)
+readHeader fp = withReadHdl_ fp $ \handle -> do
+  hlbs <- liftIO $ LBS.hGet handle 4
+  case decodeOrFail hlbs of
+    Left (_, _, e) -> error e
+    Right (_, _, mg@(IDXMagic _ ndims)) -> do
+      let
+        bytesDimsVec = 4 * ndims -- each dim is a 32 bit (4 byte) int
+      dvlbs <- liftIO $ LBS.hGet handle bytesDimsVec
+      case getDims ndims dvlbs of
+        Left e -> error e
+        Right vv -> do
+          let
+            ndata = V.head vv
+            bufsizes = V.tail vv
+          pure (mg, ndata, bufsizes)
+
 
 -- | "magic number" starting the file header for the IDX format
 --
