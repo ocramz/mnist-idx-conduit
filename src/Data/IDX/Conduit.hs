@@ -15,40 +15,49 @@ Both sparse and dense decoders are provided. In either case, the range of the da
 
 -}
 module Data.IDX.Conduit (
-  -- * Labels
+  -- * Source
+  -- ** Labels
   sourceIdxLabels,
   mnistLabels,
-  -- * Data
-  -- ** Dense data buffers
+  -- ** Data
+  -- *** Dense data buffers
   sourceIdx,
-  -- ** Sparse data buffers
+  -- *** Sparse data buffers
   sourceIdxSparse,
+  -- * Sink
+  sinkIdx,
+  sinkIdxSparse,
+  -- * Types
   Sparse,
-  sBufSize, sNzComponents
+  sBufSize, sNzComponents,
+  IDXMagic(..)
                         )where
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO(..))
 import Data.Either (isRight)
-import Data.Foldable (Foldable(..))
+import Data.Foldable (Foldable(..), traverse_, for_)
 import Data.Int (Int8, Int16, Int32)
 import Data.Word (Word8)
 import GHC.IO.Handle (Handle, hSeek, SeekMode(..), hClose)
 import System.IO (IOMode(..), openBinaryFile)
 -- binary
-import Data.Binary (Binary(..), Get, getWord8, putWord8, decode, decodeOrFail)
+import Data.Binary (Binary(..), Get, getWord8, putWord8, encode, decode, decodeOrFail)
 import Data.Binary.Get (runGetOrFail)
 -- bytestring
+import qualified Data.ByteString as BS (ByteString)
 import qualified Data.ByteString.Lazy as LBS (ByteString, hGet, readFile, toStrict, map)
-import qualified Data.ByteString.Lazy.Internal as LBS (unpackBytes)
+import qualified Data.ByteString.Lazy.Internal as LBS (unpackBytes, packBytes)
 -- conduit
 import Conduit (MonadResource, runResourceT, (.|), runConduitRes)
 import qualified Data.Conduit as C (ConduitT, runConduit, bracketP, yield)
+import qualified Data.Conduit.Combinators as C (sinkFile, map, takeExactly)
 -- containers
 import Data.Sequence (Seq, (|>))
+import qualified Data.Sequence as SQ (fromList)
 -- vector
 import qualified Data.Vector as V (Vector, replicateM, length, forM_, head, tail)
-import qualified Data.Vector.Unboxed as VU (Unbox, Vector, fromList)
+import qualified Data.Vector.Unboxed as VU (Unbox, Vector, length, fromList, toList, foldl, (!))
 
 
 -- | Outputs dense data buffers in the 0-255 range
@@ -104,6 +113,49 @@ decodeE l = case decodeOrFail l of
     Right (_, _, x) -> Right x
 
 
+-- | Write a dataset to disk
+sinkIdx :: (MonadResource m, Foldable t) =>
+           FilePath -- ^ file to write
+        -> IDXMagic
+        -> Int -- ^ number of data items that will be written
+        -> t Int -- ^ data dimension sizes
+        -> C.ConduitT (VU.Vector Word8) c m ()
+sinkIdx = sinkIDX_ (LBS.toStrict . fromComponents . VU.toList)
+
+-- | Write a sparse dataset to disk
+sinkIdxSparse :: (Foldable t, MonadResource m) =>
+                 FilePath -- ^ file to write
+              -> IDXMagic
+              -> Int -- ^ number of data items that will be written
+              -> t Int -- ^ data dimension sizes
+              -> C.ConduitT (Sparse Word8) c m ()
+sinkIdxSparse = sinkIDX_ (\(Sparse n vu) -> LBS.toStrict $ fromComponents $ densify n vu)
+
+sinkIDX_ :: (MonadResource m, Foldable t) =>
+            (i -> BS.ByteString)
+         -> FilePath
+         -> IDXMagic
+         -> Int -- ^ number of data items that will be written
+         -> t Int -- ^ data dimension sizes
+         -> C.ConduitT i c m ()
+sinkIDX_ buildf fp magic ndata ds = src .|
+                                    C.sinkFile fp
+  where
+    magicbs = encodeBS (magic :: IDXMagic)
+    ndatabs = encodeBS (fromIntegral ndata :: Int32)
+    src = do
+      C.yield magicbs -- magic number
+      C.yield ndatabs -- number of data items
+      for_ ds $ \d -> do
+        let
+          d32 :: Int32
+          d32 = fromIntegral d
+        C.yield (encodeBS d32)
+      C.takeExactly ndata $ C.map buildf
+
+
+encodeBS :: (Binary b) => b -> BS.ByteString
+encodeBS = LBS.toStrict . encode
 
 sourceIDX_ :: MonadResource m =>
               (Int -> LBS.ByteString -> o)
@@ -139,8 +191,24 @@ sparsify xs = VU.fromList $ toList $ snd $ foldl ins (0, mempty) xs
       then (succ i, acc |> (i, x))
       else (succ i, acc)
 
+densify :: Int -> VU.Vector (Int, Word8) -> [Word8]
+densify n vu = toList $ snd $ foldl ins (0, mempty) [0 .. n - 1]
+  where
+    nnz = VU.length vu
+    ins (inz, acc) i
+      | inz < nnz =
+        let (iv, x) = vu VU.! inz
+        in case i `compare` iv of
+          EQ -> (succ inz, acc |> x)
+          _ -> (inz, acc |> 0)
+      | otherwise = (inz, acc |> 0)
+
+
 components :: LBS.ByteString -> [Word8]
 components = LBS.unpackBytes
+
+fromComponents :: [Word8] -> LBS.ByteString
+fromComponents = LBS.packBytes
 
 -- | Sparse buffer (containing only nonzero entries)
 data Sparse a = Sparse {
