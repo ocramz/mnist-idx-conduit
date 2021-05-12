@@ -27,7 +27,7 @@ spec = do
       ll `shouldBe` dats
 
 testfp :: FilePath
-testfp = "test/ConduitSpec_temp" 
+testfp = "test/ConduitSpec_temp.idx" 
 
 readData :: IO [VU.Vector Word8]
 readData = runConduitRes $

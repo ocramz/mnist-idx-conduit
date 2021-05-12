@@ -118,31 +118,34 @@ decodeE l = case decodeOrFail l of
     Right (_, _, x) -> Right x
 
 
+{-# WARNING sinkIdx "this produces an incomplete header for some reason, causing the decoder to chop the data items at the wrong length. Do not use until https://github.com/ocramz/mnist-idx-conduit/issues/1 is resolved." #-}
 -- | Write a dataset to disk
 --
 -- Contents are written as unsigned bytes, so make sure 8 bit data comes in without losses
 sinkIdx :: (MonadResource m, Foldable t) =>
            FilePath -- ^ file to write
         -> Int -- ^ number of data items that will be written
-        -> t Int -- ^ data dimension sizes
+        -> t Word32 -- ^ data dimension sizes
         -> C.ConduitT (VU.Vector Word8) Void m ()
 sinkIdx = sinkIDX_ (LBS.toStrict . fromComponents . VU.toList)
 
+{-# WARNING sinkIdxSparse "this produces an incomplete header for some reason, causing the decoder to chop the data items at the wrong length. Do not use until https://github.com/ocramz/mnist-idx-conduit/issues/1 is resolved." #-}
 -- | Write a sparse dataset to disk
 --
 -- Contents are written as unsigned bytes, so make sure 8 bit data comes in without losses
 sinkIdxSparse :: (Foldable t, MonadResource m) =>
                  FilePath -- ^ file to write
               -> Int -- ^ number of data items that will be written
-              -> t Int -- ^ data dimension sizes
+              -> t Word32 -- ^ data dimension sizes
               -> C.ConduitT (Sparse Word8) Void m ()
 sinkIdxSparse = sinkIDX_ (\(Sparse n vu) -> LBS.toStrict $ fromComponents $ densify n vu)
 
+{-# WARNING sinkIDX_ "this produces an incomplete header for some reason, causing the decoder to chop the data items at the wrong length. Do not use until https://github.com/ocramz/mnist-idx-conduit/issues/1 is resolved." #-}
 sinkIDX_ :: (MonadResource m, Foldable t) =>
             (i -> BS.ByteString)
          -> FilePath
          -> Int -- ^ number of data items that will be written
-         -> t Int -- ^ data dimension sizes
+         -> t Word32 -- ^ data dimension sizes
          -> C.ConduitT i Void m ()
 sinkIDX_ buildf fp ndata ds = src .|
                               C.sinkFile fp
@@ -242,7 +245,9 @@ withReadHdl fp = C.bracketP (openBinaryFile fp ReadMode) hClose
 withReadHdl_ :: FilePath -> (Handle -> IO r) -> IO r
 withReadHdl_ fp = withBinaryFile fp ReadMode
 
-readHeader :: FilePath -> IO (IDXMagic, Int32, V.Vector Int32)
+-- | Decode the header of an IDX data file and print out its contents
+readHeader :: FilePath -- ^ path of IDX file
+           -> IO (IDXMagic, Int32, V.Vector Int32) -- ^ "magic number", number of data items, list of dimension sizes of each data item
 readHeader fp = withReadHdl_ fp $ \handle -> do
   hlbs <- liftIO $ LBS.hGet handle 4
   case decodeOrFail hlbs of

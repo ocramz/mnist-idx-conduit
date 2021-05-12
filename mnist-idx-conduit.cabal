@@ -42,7 +42,7 @@ library
 
 test-suite spec
   default-language:    Haskell2010
-  ghc-options:         -Wall
+  ghc-options:         -Wall -Wno-missing-home-modules
   type:                exitcode-stdio-1.0
   hs-source-dirs:      test
   main-is:             Spec.hs
