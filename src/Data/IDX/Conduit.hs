@@ -42,7 +42,8 @@ import Control.Monad.IO.Class (MonadIO(..))
 import Data.Either (isRight)
 import Data.Foldable (Foldable(..), traverse_, for_)
 import Data.Int (Int8, Int16, Int32)
-import Data.Word (Word8)
+import Data.Word (Word8, Word16, Word32)
+import Data.Void (Void)
 import GHC.IO.Handle (Handle, hSeek, SeekMode(..), hClose)
 import System.IO (IOMode(..), withBinaryFile, openBinaryFile)
 -- binary
@@ -69,7 +70,7 @@ import qualified Data.Vector.Unboxed as VU (Unbox, Vector, length, fromList, toL
 -- In the case of MNIST dataset, 0 corresponds to the background of the image.
 sourceIdx :: MonadResource m =>
              FilePath -- ^ filepath of uncompressed IDX data file
-          -> C.ConduitT a (VU.Vector Word8) m ()
+          -> C.ConduitT () (VU.Vector Word8) m ()
 sourceIdx = sourceIDX_ (\ _ bs -> VU.fromList $ components bs)
 
 
@@ -78,7 +79,7 @@ sourceIdx = sourceIDX_ (\ _ bs -> VU.fromList $ components bs)
 -- This incurs at least one additional data copy of each vector, but the resulting vectors take up less space.
 sourceIdxSparse :: MonadResource m =>
                    FilePath -- ^ filepath of uncompressed IDX data file
-                -> C.ConduitT a (Sparse Word8) m ()
+                -> C.ConduitT () (Sparse Word8) m ()
 sourceIdxSparse = sourceIDX_ (\n bs -> Sparse n (sparsify $ components bs))
 
 -- | Parser for the labels, can be plugged in as an argument to 'sourceIdxLabels'
@@ -93,7 +94,7 @@ mnistLabels l
 sourceIdxLabels :: MonadResource m =>
                    (LBS.ByteString -> Either e o) -- ^ parser for the labels, where the bytestring buffer contains exactly one unsigned byte
                 -> FilePath -- ^ filepath of uncompressed IDX labels file
-                -> C.ConduitT i (Either e o) m r
+                -> C.ConduitT () (Either e o) m r
 sourceIdxLabels buildf fp = withReadHdl fp $ \handle -> do
   hlbs <- liftIO $ LBS.hGet handle 4
   case decodeE hlbs of
@@ -118,19 +119,23 @@ decodeE l = case decodeOrFail l of
 
 
 -- | Write a dataset to disk
+--
+-- Contents are written as unsigned bytes, so make sure 8 bit data comes in without losses
 sinkIdx :: (MonadResource m, Foldable t) =>
            FilePath -- ^ file to write
         -> Int -- ^ number of data items that will be written
         -> t Int -- ^ data dimension sizes
-        -> C.ConduitT (VU.Vector Word8) c m ()
+        -> C.ConduitT (VU.Vector Word8) Void m ()
 sinkIdx = sinkIDX_ (LBS.toStrict . fromComponents . VU.toList)
 
 -- | Write a sparse dataset to disk
+--
+-- Contents are written as unsigned bytes, so make sure 8 bit data comes in without losses
 sinkIdxSparse :: (Foldable t, MonadResource m) =>
                  FilePath -- ^ file to write
               -> Int -- ^ number of data items that will be written
               -> t Int -- ^ data dimension sizes
-              -> C.ConduitT (Sparse Word8) c m ()
+              -> C.ConduitT (Sparse Word8) Void m ()
 sinkIdxSparse = sinkIDX_ (\(Sparse n vu) -> LBS.toStrict $ fromComponents $ densify n vu)
 
 sinkIDX_ :: (MonadResource m, Foldable t) =>
@@ -138,19 +143,19 @@ sinkIDX_ :: (MonadResource m, Foldable t) =>
          -> FilePath
          -> Int -- ^ number of data items that will be written
          -> t Int -- ^ data dimension sizes
-         -> C.ConduitT i c m ()
+         -> C.ConduitT i Void m ()
 sinkIDX_ buildf fp ndata ds = src .|
                               C.sinkFile fp
   where
     ndims = length ds
     magicbs = encodeBS (IDXMagic IDXUnsignedByte ndims)
-    ndatabs = encodeBS (fromIntegral ndata :: Int32)
+    ndatabs = encodeBS (fromIntegral ndata :: Word32)
     src = do
       C.yield magicbs -- magic number
       C.yield ndatabs -- number of data items
       for_ ds $ \d -> do -- data dimension sizes
         let
-          d32 :: Int32
+          d32 :: Word32
           d32 = fromIntegral d
         C.yield (encodeBS d32)
       C.takeExactly ndata $ C.map buildf
@@ -259,7 +264,7 @@ readHeader fp = withReadHdl_ fp $ \handle -> do
 --
 -- as per http://yann.lecun.com/exdb/mnist/
 --
--- 4 bytes header ("magic number")
+-- 32 bit (4 bytes) header ("magic number")
 data IDXMagic = IDXMagic {
   idxType :: IDXContentType
   , idxNumDims :: Int
@@ -275,14 +280,12 @@ instance Binary IDXMagic where
     nDims <- fromIntegral <$> getWord8
     pure $ IDXMagic ty nDims
   put d = do
-    putWord8 0
-    putWord8 0
-    -- Third byte is content type
+    -- first 2 bytes are 0
+    putWord8 0 >> putWord8 0
+    -- third byte encodes the type of data
     put $ idxType d
-    -- Fourth byte is number of dimensions
+    -- fourth byte encode the number of dimensions
     put $ (fromIntegral (idxNumDims d) :: Word8)
-
-
 
 
 -- | A type to describe the content, according to IDX spec
