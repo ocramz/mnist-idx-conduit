@@ -31,7 +31,7 @@ testfp = "test/ConduitSpec_temp.idx"
 
 readData :: IO [VU.Vector Word8]
 readData = runConduitRes $
-             sourceIdx testfp .|
+             sourceIdx testfp Nothing .|
              C.sinkList
 
 writeData :: [VU.Vector Word8] -> IO ()

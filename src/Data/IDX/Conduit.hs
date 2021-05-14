@@ -56,7 +56,7 @@ import qualified Data.ByteString.Lazy.Internal as LBS (unpackBytes, packBytes)
 -- conduit
 import Conduit (MonadResource, runResourceT, (.|), runConduitRes)
 import qualified Data.Conduit as C (ConduitT, runConduit, bracketP, yield)
-import qualified Data.Conduit.Combinators as C (sinkFile, map, takeExactly, print)
+import qualified Data.Conduit.Combinators as C (sinkFile, map, takeExactly, print, takeExactlyE)
 -- containers
 import Data.Sequence (Seq, (|>))
 import qualified Data.Sequence as SQ (fromList)
@@ -70,6 +70,7 @@ import qualified Data.Vector.Unboxed as VU (Unbox, Vector, length, fromList, toL
 -- In the case of MNIST dataset, 0 corresponds to the background of the image.
 sourceIdx :: MonadResource m =>
              FilePath -- ^ filepath of uncompressed IDX data file
+          -> Maybe Int -- ^ optional maximum number of entries to retrieve
           -> C.ConduitT () (VU.Vector Word8) m ()
 sourceIdx = sourceIDX_ (\ _ bs -> VU.fromList $ components bs)
 
@@ -79,6 +80,7 @@ sourceIdx = sourceIDX_ (\ _ bs -> VU.fromList $ components bs)
 -- This incurs at least one additional data copy of each vector, but the resulting vectors take up less space.
 sourceIdxSparse :: MonadResource m =>
                    FilePath -- ^ filepath of uncompressed IDX data file
+                -> Maybe Int -- ^ optional maximum number of entries to retrieve
                 -> C.ConduitT () (Sparse Word8) m ()
 sourceIdxSparse = sourceIDX_ (\n bs -> Sparse n (sparsify $ components bs))
 
@@ -94,8 +96,9 @@ mnistLabels l
 sourceIdxLabels :: MonadResource m =>
                    (LBS.ByteString -> Either e o) -- ^ parser for the labels, where the bytestring buffer contains exactly one unsigned byte
                 -> FilePath -- ^ filepath of uncompressed IDX labels file
+                -> Maybe Int -- ^ optional maximum number of entries to retrieve
                 -> C.ConduitT () (Either e o) m r
-sourceIdxLabels buildf fp = withReadHdl fp $ \handle -> do
+sourceIdxLabels buildf fp mmax = withReadHdl fp $ \handle -> do
   hlbs <- liftIO $ LBS.hGet handle 4
   case decodeE hlbs of
     Left e -> error e
@@ -103,14 +106,18 @@ sourceIdxLabels buildf fp = withReadHdl fp $ \handle -> do
       nitbs <- liftIO $ LBS.hGet handle 4 -- number of items is 32 bit (4 byte)
       case decodeE nitbs of
         Left e -> error e
-        Right (n :: Int) -> do
+        Right (ndata :: Int) -> do
           let bufsize = 1
-              go h = do
-                b <- liftIO $ LBS.hGet h bufsize
-                liftIO $ hSeek h RelativeSeek (fromIntegral bufsize)
-                C.yield $ buildf b
-                go h
-          go handle
+              go i = do
+                let n = case mmax of
+                      Nothing -> n
+                      Just mi -> mi
+                when (i < min n ndata) $ do
+                  b <- liftIO $ LBS.hGet handle bufsize
+                  liftIO $ hSeek handle RelativeSeek (fromIntegral bufsize)
+                  C.yield $ buildf b
+                go (succ i)
+          go 0
 
 decodeE :: Binary b => LBS.ByteString -> Either String b
 decodeE l = case decodeOrFail l of
@@ -170,8 +177,9 @@ encodeBS = LBS.toStrict . encode
 sourceIDX_ :: MonadResource m =>
               (Int -> LBS.ByteString -> o)
            -> FilePath -- ^ filepath of uncompressed IDX data file
+           -> Maybe Int -- ^ optional maximum number of entries to retrieve
            -> C.ConduitT i o m ()
-sourceIDX_ buildf fp = withReadHdl fp $ \handle -> do
+sourceIDX_ buildf fp mmax = withReadHdl fp $ \handle -> do
   hlbs <- liftIO $ LBS.hGet handle 4
   case decodeOrFail hlbs of
     Left (_, _, e) -> error e
@@ -185,13 +193,16 @@ sourceIDX_ buildf fp = withReadHdl fp $ \handle -> do
           let
             ndata = V.head vv
             bufsize = product $ V.tail vv
-            go i h = do
-              when (i < ndata) $ do
-                b <- liftIO $ LBS.hGet h bufsize
-                liftIO $ hSeek h RelativeSeek (fromIntegral bufsize)
+            go i = do
+              let n = case mmax of
+                    Nothing -> ndata
+                    Just m  -> m
+              when (i < min n ndata) $ do
+                b <- liftIO $ LBS.hGet handle bufsize
+                liftIO $ hSeek handle RelativeSeek (fromIntegral bufsize)
                 C.yield $ buildf bufsize b
-                go (succ i) h
-          go 0 handle
+                go (succ i)
+          go 0
 
 sparsify :: (Foldable t) => t Word8 -> VU.Vector (Int, Word8)
 sparsify xs = VU.fromList $ toList $ snd $ foldl ins (0, mempty) xs
